@@ -1,4 +1,5 @@
 const LABEL_TEXT = { insult: "insulto", clean: "no insulto" };
+const CATEGORY_TEXT = { insult: "insulto", threat: "amenaza", identity_hate: "odio por identidad" };
 const SOURCE_TEXT = { chat: "Del chat", generated: "Generado", imported: "Importado" };
 const KEY_LABELS = { 1: "insult", 2: "clean", 3: "discard" };
 
@@ -48,10 +49,12 @@ function showError(message) {
 }
 
 function describeModel(active) {
-  if (!active) return "El modelo multilingüe original de Laya. Todavía no se activó ningún modelo afinado.";
-  const { base, tuned } = active.metrics;
+  if (!active) return "Todavía no hay un modelo activo. Entrenalo con el comando de abajo.";
   const date = new Date(active.activated_at).toLocaleString("es-AR", { dateStyle: "medium", timeStyle: "short" });
-  return `Afinado (${active.name}), activado el ${date}. Con los ejemplos de prueba, F1 pasó de ${pct(base.f1)} a ${pct(tuned.f1)}.`;
+  const auroc = active.metrics.flag_auroc?.["suite-es"];
+  const quality = auroc == null ? "" : ` En el chat en español que no vio al entrenar separa con AUROC ${auroc.toFixed(2)} (1.00 es perfecto).`;
+  // The date ends in "p. m." or "a. m.", so it goes last and closes the sentence.
+  return `mmBERT afinado (${active.name}).${quality} Activado el ${date}`;
 }
 
 async function refreshSummary() {
@@ -80,7 +83,7 @@ async function loadNext() {
   const parts = [SOURCE_TEXT[example.source] ?? example.source];
   if (example.category) parts.push(example.category);
   if (example.suggested) parts.push(`Sugerido: ${LABEL_TEXT[example.suggested]}`);
-  parts.push(`Laya hoy: ${pct(prediction.p_insult)} insulto (${prediction.model})`);
+  parts.push(`Modelo hoy: ${pct(prediction.p_flag)} ${CATEGORY_TEXT[prediction.category]} (${prediction.model})`);
   els.meta.replaceChildren(...parts.map(span));
 }
 

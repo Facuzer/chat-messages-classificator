@@ -31,3 +31,6 @@ models/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Benchmark predictions cache and reports (scripts/bench.py)
+bench_out/

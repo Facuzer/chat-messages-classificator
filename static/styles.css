@@ -248,7 +248,7 @@ h1 {
   .spoiler { transition: none; }
 }
 
-/* Laya's verdict under each bubble */
+/* The model's verdict under each bubble */
 
 .meta {
   display: flex;

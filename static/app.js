@@ -1,6 +1,12 @@
 const SENTIMENT_LABELS = { positive: "Positivo", negative: "Negativo", neutral: "Neutro" };
+const CATEGORY_LABELS = {
+  insult: "insulto",
+  threat: "amenaza",
+  identity_hate: "odio por identidad",
+  sexual_harassment: "acoso sexual",
+  profanity: "puteada",
+};
 const STAT_KEYS = ["positive", "negative", "neutral", "flagged"];
-const HIDDEN_LABEL = "Mensaje oculto por posible insulto. Activalo para mostrarlo.";
 
 const els = {
   thread: document.getElementById("thread"),
@@ -41,6 +47,12 @@ function el(tag, className, text) {
   return node;
 }
 
+const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
+function hiddenLabel(flag) {
+  return `Mensaje oculto por posible ${CATEGORY_LABELS[flag.category]}. Activalo para mostrarlo.`;
+}
+
 function formatTime(iso) {
   return new Date(iso).toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit" });
 }
@@ -49,9 +61,11 @@ function renderMessage(message) {
   const item = el("li", message.flagged ? "msg is-flagged" : "msg");
   const bubble = el("div", "bubble");
   const text = el("p", "text", message.text);
+  // What could get the message flagged: the most likely of insult, threat and identity hate.
+  const flag = message.flag;
 
   if (message.flagged) {
-    const note = el("p", "flag-note", `⚠ Posible insulto (${pct(message.insult.confidence)}) `);
+    const note = el("p", "flag-note", `⚠ Posible ${CATEGORY_LABELS[flag.category]} (${pct(flag.score)}) `);
     note.append(el("span", "flag-hint", "Pasá el mouse o tocá para verlo"));
     bubble.append(note);
 
@@ -59,24 +73,30 @@ function renderMessage(message) {
     text.tabIndex = 0;
     text.setAttribute("role", "button");
     text.setAttribute("aria-pressed", "false");
-    text.setAttribute("aria-label", HIDDEN_LABEL);
+    text.setAttribute("aria-label", hiddenLabel(flag));
+    text.dataset.hiddenLabel = hiddenLabel(flag);
   }
   bubble.append(text);
 
   const sentiment = message.sentiment;
   const meta = el("div", "meta");
-  const chip = el("span", "sentiment", `${SENTIMENT_LABELS[sentiment.label]} ${pct(sentiment.confidence)}`);
-  chip.dataset.sentiment = sentiment.label;
-  chip.title = Object.entries(sentiment.probabilities)
+  const sentimentChip = el("span", "sentiment", `${SENTIMENT_LABELS[sentiment.label]} ${pct(sentiment.confidence)}`);
+  sentimentChip.dataset.sentiment = sentiment.label;
+  sentimentChip.title = Object.entries(sentiment.probabilities)
     .map(([label, p]) => `${SENTIMENT_LABELS[label] ?? label}: ${pct(p)}`)
     .join("\n");
 
   const time = el("time", "", formatTime(message.created_at));
   time.dateTime = message.created_at;
 
+  const flagChip = el("span", "", `${capitalize(CATEGORY_LABELS[flag.category])} ${pct(flag.score)}`);
+  flagChip.title = Object.entries(message.categories)
+    .map(([category, p]) => `${capitalize(CATEGORY_LABELS[category] ?? category)}: ${pct(p)}`)
+    .join("\n");
+
   meta.append(
-    chip,
-    el("span", "", `Insulto ${pct(message.insult.probabilities.insult)}`),
+    sentimentChip,
+    flagChip,
     el("span", "model", message.model),
     el("span", "", `${message.latency_ms} ms`),
     time,
@@ -121,7 +141,7 @@ async function labelMessage(button) {
 function renderPending() {
   const item = el("li", "msg is-pending");
   const bubble = el("div", "bubble");
-  bubble.append(el("p", "text pending-note", "Laya está evaluando…"));
+  bubble.append(el("p", "text pending-note", "Evaluando…"));
   item.append(bubble);
   return item;
 }
@@ -160,7 +180,7 @@ function toggleSpoiler(target) {
   const revealed = target.classList.toggle("revealed");
   target.setAttribute("aria-pressed", String(revealed));
   if (revealed) target.removeAttribute("aria-label");
-  else target.setAttribute("aria-label", HIDDEN_LABEL);
+  else target.setAttribute("aria-label", target.dataset.hiddenLabel);
 }
 
 function autoGrow() {

@@ -17,7 +17,7 @@
         <h1>Entrenamiento</h1>
         <p class="total"><a href="./">Volver al chat</a></p>
       </div>
-      <p class="lede">Revisá ejemplos para enseñarle a Laya qué es un insulto. Con suficientes ejemplos, el entrenamiento arma un modelo nuevo y lo usa solo si detecta mejor que el actual.</p>
+      <p class="lede">Revisá ejemplos para enseñarle al modelo qué es un insulto. Con suficientes ejemplos, el entrenamiento arma un modelo nuevo y lo usa solo si detecta mejor que el actual.</p>
     </header>
 
     <section class="panel progress" aria-labelledby="progress-title">
@@ -62,7 +62,7 @@
       <p id="model-status">Cargando…</p>
       <p class="muted">Para entrenar con lo que etiquetaste, corré en una terminal:</p>
       <pre><code>uv run python scripts/finetune.py</code></pre>
-      <p class="muted">Después reiniciá el server. Para volver al modelo original: <code>uv run python scripts/activate_model.py --base</code></p>
+      <p class="muted">Después reiniciá el server. Para ver o elegir otro modelo entrenado: <code>uv run python scripts/activate_model.py --list</code></p>
     </section>
 
     <section class="panel" aria-labelledby="metrics-title">

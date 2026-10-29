@@ -1,81 +1,70 @@
 from __future__ import annotations
 
-import logging
 import os
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from app.checkpoints import ActiveCheckpoint, questions_match
-from app.metrics import LatencyRecorder
-
-log = logging.getLogger(__name__)
-
-STATE_KEY = "message"
-
-# Two-option `choice` with semantic labels rather than `noul`: Laya's `noul` can follow its
-# true/false labels instead of the text. Both questions share one forward pass.
-QUESTIONS = {
-    "insult": {
-        "type": "choice",
-        "instructions": "Does `message` contain an insult, a threat or strong profanity?",
-        "criteria": {
-            "insult": "insults, name-calling, slurs, threats or strong profanity, whether or not aimed at a person",
-            "clean": "none of those; includes sarcasm, mild swearing (such as 'mierda' or 'carajo') and friendly banter",
-        },
-    },
-    "sentiment": {
-        "type": "choice",
-        "instructions": "What is the overall sentiment of `message`?",
-        "criteria": {
-            "positive": "favorable, happy, grateful, satisfied",
-            "negative": "unhappy, angry, disappointed, critical",
-            "neutral": "factual, or no clear sentiment",
-        },
-    },
-}
+from app.checkpoints import ActiveCheckpoint, checkpoint_problem
+from app.jsonfile import read_json
+from app.model import SENTIMENTS
+from bench.taxonomy import CATEGORIES, FLAG_CATEGORIES
 
 
 @dataclass(frozen=True)
 class Verdict:
     label: str
-    # Laya's `answer_confidence`: the calibrated probability of `label`. Its `confidence` field
-    # is normalised entropy, which is not a probability and is not meant for thresholds.
+    # The probability of `label`.
     confidence: float
     probabilities: dict[str, float]
 
 
 @dataclass(frozen=True)
+class Flag:
+    # The highest of the `flag` categories' probabilities, and which category it is.
+    score: float
+    category: str
+    threshold: float
+
+
+@dataclass(frozen=True)
 class Classification:
     flagged: bool
-    insult: Verdict
+    flag: Flag
+    categories: dict[str, float]
     sentiment: Verdict
     model: str
     latency_ms: int
 
 
-def _verdict(answer: dict) -> Verdict:
-    return Verdict(label=answer["choice"], confidence=answer["answer_confidence"], probabilities=answer["probabilities"])
+def _sentiment(raw: dict[str, float]) -> Verdict:
+    probabilities = {s: raw[f"sentiment.{s}"] for s in SENTIMENTS}
+    label = max(SENTIMENTS, key=probabilities.__getitem__)
+    return Verdict(label=label, confidence=probabilities[label], probabilities=probabilities)
 
 
-def to_classification(result: dict, threshold: float, latency_ms: int) -> Classification:
-    answers = result["answers"]
-    insult = _verdict(answers["insult"])
+def to_classification(raw: dict[str, float], threshold: float, model: str, latency_ms: int) -> Classification:
+    categories = {c: raw[c] for c in CATEGORIES}
+    category = max(FLAG_CATEGORIES, key=categories.__getitem__)
     return Classification(
-        flagged=insult.label == "insult" and insult.confidence >= threshold,
-        insult=insult,
-        sentiment=_verdict(answers["sentiment"]),
-        model=result["routing"]["model"],
+        # The threshold is the score of a calibration negative, so flagging starts above it.
+        flagged=categories[category] > threshold,
+        flag=Flag(score=categories[category], category=category, threshold=threshold),
+        categories=categories,
+        sentiment=_sentiment(raw),
+        model=model,
         latency_ms=latency_ms,
     )
 
 
-class LayaClassifier:
-    def __init__(self, router, threshold: float, checkpoint: dict | None = None):
-        self.router = router
+class Classifier:
+    def __init__(self, predict, threshold: float, model: str, checkpoint: dict | None = None):
+        # `predict(texts)` returns the checkpoint's raw outputs (app.model.predict_raw) per text.
+        self.predict = predict
         self.threshold = threshold
-        # The fine-tuned checkpoint answering for `multilingual` (see app.checkpoints), or None for the base model.
+        self.model = model
+        # The active checkpoint as app.checkpoints.ActiveCheckpoint.get returns it.
         self.checkpoint = checkpoint
         # One inference at a time: the endpoint runs in a thread pool and every request shares the model.
         self._lock = threading.Lock()
@@ -84,36 +73,33 @@ class LayaClassifier:
     def classify(self, text: str) -> Classification:
         with self._lock:
             start = time.perf_counter()
-            result = self.router.predict({STATE_KEY: text}, QUESTIONS)
+            [raw] = self.predict([text])
             latency_ms = round((time.perf_counter() - start) * 1000)
-        self.latency.record(latency_ms)
-        return to_classification(result, self.threshold, latency_ms)
+        return to_classification(raw, self.threshold, self.model, latency_ms)
 
 
-def build_router(checkpoint: Path | None = None):
-    """A Router with no checkpoint loaded yet; routing decisions work without loading one.
-
-    `checkpoint` is a local fine-tuned directory that answers in place of `multilingual`.
-    """
-    # Imported here so that importing this module (e.g. in tests) does not pull in torch.
-    from laya import Router
-
-    models = {"multilingual": str(checkpoint)} if checkpoint else None
-    # Laya names a Latin-script language only from function words exclusive to it, so short or
-    # unaccented Spanish often stays unidentified. Unidentified text takes `default`: sending it
-    # to the multilingual checkpoint keeps Spanish off the English one, while text Laya does
-    # identify as English still goes there.
-    return Router(models=models, device=os.environ.get("LAYA_DEVICE") or None, default="multilingual")
+def threshold_of(checkpoint: Path) -> float:
+    """FLAG_THRESHOLD when set, else the threshold the trainer chose for this checkpoint."""
+    override = os.environ.get("FLAG_THRESHOLD")
+    if override:
+        return float(override)
+    return float(read_json(Path(checkpoint) / "training_meta.json", {})["threshold"])
 
 
-def load_classifier(active: ActiveCheckpoint | None = None) -> LayaClassifier:
+def load_classifier(active: ActiveCheckpoint | None = None, loader=None, device: str | None = None) -> Classifier:
+    """The active checkpoint, on MODEL_DEVICE (CPU unless set): the size of machine it has to run on."""
+    from app.model import load, predict_raw
+
     checkpoint = (active or ActiveCheckpoint()).get()
-    if checkpoint and not questions_match(checkpoint["path"], QUESTIONS):
-        log.warning(
-            "The active checkpoint %s was trained with different QUESTIONS; its answers may be off. "
-            "Fine-tune again or run scripts/activate_model.py --base.",
-            checkpoint["path"],
+    if checkpoint is None:
+        raise RuntimeError("No hay un modelo activo. Entrená uno con: uv run python scripts/finetune.py")
+    path = checkpoint["path"]
+    problem = checkpoint_problem(path)
+    if problem:
+        raise RuntimeError(
+            f"El modelo activo ({path.name}) {problem}. Entrená uno con uv run python scripts/finetune.py "
+            "o activá otro con scripts/activate_model.py."
         )
-    router = build_router(checkpoint["path"] if checkpoint else None)
-    router.preload(["english", "multilingual"])
-    return LayaClassifier(router, threshold=float(os.environ.get("FLAG_THRESHOLD", "0.7")), checkpoint=checkpoint)
+    tokenizer, model, device = (loader or load)(path, device or os.environ.get("MODEL_DEVICE") or "cpu")
+    return Classifier(lambda texts: predict_raw(tokenizer, model, device, texts), threshold=threshold_of(path),
+                      model=path.name, checkpoint=checkpoint)

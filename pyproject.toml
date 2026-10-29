@@ -1,15 +1,12 @@
 [project]
 name = "message-flagger"
 version = "0.1.0"
-description = "Chat mínimo que usa Laya para flaggear insultos y clasificar el sentimiento de cada mensaje"
+description = "Chat mínimo que usa un mmBERT ajustado para flaggear agresiones y clasificar el sentimiento de cada mensaje"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115",
-    # Pinned: trainer/finetune.py uses Laya's private encoding and calibration APIs.
-    "laya==0.3.22",
-    "nvidia-ml-py>=12",
-    "psutil>=5.9",
     "torch>=2.14",
+    "transformers>=5.18",
     "uvicorn>=0.30",
 ]
 
@@ -18,9 +15,15 @@ dev = [
     "httpx2>=2.13.1",
     "pytest>=8",
 ]
+# Training and evaluation data and metrics (trainer/, bench/): Hugging Face datasets and scikit-learn.
+bench = [
+    "datasets>=4.0",
+    "scikit-learn>=1.9",
+]
 
 [tool.uv]
 package = false
+default-groups = ["dev", "bench"]
 
 # PyPI only ships CPU builds of torch for Windows, so torch comes from the PyTorch CUDA index.
 [tool.uv.sources]
@@ -35,4 +38,4 @@ explicit = true
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-m 'not slow'"
-markers = ["slow: loads the real Laya checkpoint; run with `pytest -m slow`"]
+markers = ["slow: loads real models or downloads datasets; run with `pytest -m slow`"]
