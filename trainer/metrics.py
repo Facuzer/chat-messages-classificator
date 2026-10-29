@@ -1,74 +1,41 @@
-"""How well an insult classifier does on labeled examples, and whether a new one should replace the old."""
+"""Sentiment scoring, and whether a new checkpoint should replace the active one."""
 
-MIN_TEST_PER_CLASS = 10
-# Agreement with the base model is only a proxy: sentiment has no labels, and many of the answers
-# fine-tuning changes were wrong before (an unaccented "qué rico estuvo el asado" read as negative).
-# Runs on the generated set keep 87-90% with most changes being fixes; a sentiment collapse falls far
-# below this.
-MIN_SENTIMENT_AGREEMENT = 0.85
+from __future__ import annotations
 
+from app.model import SENTIMENTS
 
-def binary_metrics(labels: list[str], p_insult: list[float], threshold: float) -> dict:
-    predicted = [p >= threshold for p in p_insult]
-    actual = [label == "insult" for label in labels]
-    tp = sum(p and a for p, a in zip(predicted, actual))
-    fp = sum(p and not a for p, a in zip(predicted, actual))
-    fn = sum(not p and a for p, a in zip(predicted, actual))
-    n = len(labels)
-    precision = tp / (tp + fp) if tp + fp else 0.0
-    recall = tp / (tp + fn) if tp + fn else 0.0
-    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
-    return {
-        "n": n,
-        "positives": sum(actual),
-        "false_positives": fp,
-        "false_negatives": fn,
-        "accuracy": (n - fp - fn) / n if n else 0.0,
-        "precision": precision,
-        "recall": recall,
-        "f1": f1,
-    }
+# A first checkpoint goes into use only if it separates harmful from harmless Spanish chat at least this
+# well (flag AUROC on the suite rows it never saw).
+MIN_SPANISH_AUROC = 0.75
+# A better flag does not make up for a sentiment much worse than the active checkpoint's.
+MAX_SENTIMENT_DROP = 0.05
 
 
-def calibration_error(labels: list[str], p_insult: list[float], bins: int = 10) -> float:
-    """Expected calibration error: how far the model's confidence is from how often it is right."""
-    n = len(labels)
-    if not n:
-        return 0.0
-    buckets: list[list[tuple[float, bool]]] = [[] for _ in range(bins)]
-    for label, p in zip(labels, p_insult):
-        confidence = max(p, 1 - p)
-        correct = (p >= 0.5) == (label == "insult")
-        buckets[min(int(confidence * bins), bins - 1)].append((confidence, correct))
-    error = 0.0
-    for bucket in buckets:
-        if bucket:
-            mean_conf = sum(c for c, _ in bucket) / len(bucket)
-            accuracy = sum(ok for _, ok in bucket) / len(bucket)
-            error += len(bucket) / n * abs(accuracy - mean_conf)
-    return error
+def macro_f1(gold: list[str], predicted: list[str], labels=SENTIMENTS) -> float:
+    f1s = []
+    for label in labels:
+        tp = sum(g == p == label for g, p in zip(gold, predicted))
+        fp = sum(p == label != g for g, p in zip(gold, predicted))
+        fn = sum(g == label != p for g, p in zip(gold, predicted))
+        f1s.append(2 * tp / (2 * tp + fp + fn) if tp else 0.0)
+    return sum(f1s) / len(f1s)
 
 
-def agreement(a: list[str], b: list[str]) -> float:
-    return sum(x == y for x, y in zip(a, b)) / len(a) if a else 1.0
-
-
-def activation_decision(base: dict, tuned: dict, sentiment_agreement: float, test_counts: dict) -> tuple[bool, str]:
-    """Whether the fine-tuned checkpoint should replace the one in use, with the reason in Spanish."""
-    few = [label for label in ("insult", "clean") if test_counts.get(label, 0) < MIN_TEST_PER_CLASS]
-    if few:
-        return False, (
-            f"Hay menos de {MIN_TEST_PER_CLASS} ejemplos de prueba de tipo {' y '.join(few)}: "
-            "no alcanza para saber si el modelo nuevo es mejor. Etiquetá más ejemplos."
-        )
-    if tuned["f1"] <= base["f1"]:
-        return False, f"El modelo nuevo no detecta mejor los insultos (F1 {base['f1']:.2f} → {tuned['f1']:.2f})."
-    if sentiment_agreement < MIN_SENTIMENT_AGREEMENT:
-        return False, (
-            f"El modelo nuevo cambió demasiado el sentimiento: coincide con el original en el "
-            f"{sentiment_agreement:.0%} de los mensajes (mínimo {MIN_SENTIMENT_AGREEMENT:.0%})."
-        )
-    return True, (
-        f"Detecta mejor los insultos (F1 {base['f1']:.2f} → {tuned['f1']:.2f}) y mantiene el "
-        f"sentimiento (coincide en el {sentiment_agreement:.0%})."
-    )
+def activation_decision(new: dict, current: dict | None) -> tuple[bool, str]:
+    """Both are {"auroc": Spanish flag AUROC, "sentiment_f1": Spanish sentiment macro-F1 or None}, measured on
+    the same held-out rows. `current` is None when no checkpoint is active. The reason is in Spanish."""
+    auroc = new["auroc"]
+    if auroc is None:
+        return False, "No hubo filas de la suite en español para evaluar el modelo nuevo."
+    if current is None:
+        if auroc < MIN_SPANISH_AUROC:
+            return False, (f"El modelo nuevo separa poco el chat en español (AUROC {auroc:.2f}, mínimo "
+                           f"{MIN_SPANISH_AUROC:.2f}).")
+        return True, f"Es el primer modelo y separa bien el chat en español (AUROC {auroc:.2f})."
+    if auroc <= current["auroc"]:
+        return False, f"El modelo nuevo no separa mejor el chat en español (AUROC {current['auroc']:.2f} → {auroc:.2f})."
+    old_f1, new_f1 = current.get("sentiment_f1"), new.get("sentiment_f1")
+    if old_f1 is not None and new_f1 is not None and new_f1 < old_f1 - MAX_SENTIMENT_DROP:
+        return False, (f"Separa mejor el chat (AUROC {current['auroc']:.2f} → {auroc:.2f}) pero empeora el "
+                       f"sentimiento (macro-F1 {old_f1:.2f} → {new_f1:.2f}).")
+    return True, f"Separa mejor el chat en español (AUROC {current['auroc']:.2f} → {auroc:.2f})."

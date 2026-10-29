@@ -120,17 +120,6 @@ def test_functionality_accuracy_uses_the_operating_threshold():
     assert functionality_label("suite-es", "sexual_harassment") == "sexual_harassment"
 
 
-def test_routing_reports_the_share_sent_to_english():
-    examples = [ex("e1", True), ex("e2", False), ex("c1", True)]
-    raw = {"perfect": {"suite-es:e1": {"p": 0.9, "routed_english": 1.0},
-                       "suite-es:e2": {"p": 0.1, "routed_english": 0.0},
-                       "suite-es:c1": {"p": 0.9, "routed_english": 1.0}}}
-
-    b = build_scoreboard(examples, [Perfect()], raw, n_boot=5, split=split)
-
-    assert b["routing"] == [{"contestant": "perfect", "source": "suite-es", "english_share": 0.5}]
-
-
 def test_slice_keys_add_the_author_when_there_is_one():
     assert slice_keys(ex("e1", True, author="human")) == ["suite-es", "suite-es/human"]
     assert slice_keys(ex("e1", True)) == ["suite-es"]

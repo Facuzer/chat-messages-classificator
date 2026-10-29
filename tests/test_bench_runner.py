@@ -1,7 +1,7 @@
 import pytest
 
 from bench.cache import PredictionCache, text_hash
-from bench.contestants.base import effective_scores, map_labels
+from bench.contestants.base import effective_scores
 from bench.runner import run
 from bench.taxonomy import Example
 
@@ -135,10 +135,6 @@ def test_flag_is_the_max_of_insult_threat_and_identity_hate_only_when_all_three_
     assert effective_scores(Fixed({"insult": 0.2, "threat": 0.9, "identity_hate": 0.1}), {})["flag"] == 0.9
     assert "flag" not in effective_scores(Fixed({"identity_hate": 0.7}), {})
     assert effective_scores(Fixed({"flag": 0.3, "insult": 0.9, "threat": 0.9, "identity_hate": 0.9}), {})["flag"] == 0.3
-
-
-def test_map_labels_renames_only_labels_that_are_present():
-    assert map_labels({"insult": 0.5, "toxicity": 0.9}, {"insult": "insult", "threat": "threat"}) == {"insult": 0.5}
 
 
 def test_a_line_cut_inside_a_non_ascii_id_does_not_crash_loading(tmp_path):

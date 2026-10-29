@@ -1,15 +1,14 @@
-"""Fine-tune Laya's multilingual checkpoint on the labeled examples, evaluate it against the base
-model, and activate it only if it detects insults better without changing sentiment.
+"""Fine-tune mmBERT-base on the labeled examples and the public corpora, measure it on the benchmark, and
+put it in use only if it beats the active checkpoint. See docs/finetuning.md.
 
     uv run python scripts/finetune.py
-    uv run python scripts/finetune.py --epochs 6
-    uv run python scripts/finetune.py --no-activate
+    uv run python scripts/finetune.py --seed 1 --no-activate
 
-Restart the server afterwards so it loads the active checkpoint.
+The GPU runs about 60% of the time (DUTY=0.6) to keep it cool. Restart the server afterwards so it loads
+the active checkpoint.
 """
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -19,39 +18,38 @@ from app.checkpoints import MODELS_DIR  # noqa: E402
 from app.examples import DEFAULT_PATH, ExampleStore  # noqa: E402
 from trainer.finetune import NotEnoughData, TrainConfig, run  # noqa: E402
 
+SETS = {"suite-es-draft": "español (borrador sin revisar)", "dynasent-r2-en": "inglés (DynaSent)"}
 
-SENTIMENT = {"positive": "positivo", "negative": "negativo", "neutral": "neutro"}
+
+def num(x) -> str:
+    return "n/a" if x is None else f"{x:.2f}"
 
 
-def pct(x: float) -> str:
-    return f"{x:.0%}"
+def pct(x) -> str:
+    return "n/a" if x is None else f"{x:.0%}"
 
 
 def print_report(result: dict) -> None:
     m = result["metrics"]
-    base, tuned = m["base"], m["tuned"]
-    print(f"\nResultados con {base['n']} ejemplos de prueba (umbral {m['threshold']}):")
-    print(f"  {'':<34}{'original':>10}{'afinado':>10}")
-    rows = [
-        ("Aciertos", "accuracy"),
-        ("Insultos detectados (recall)", "recall"),
-        ("Alarmas correctas (precision)", "precision"),
-        ("F1 (balance de las dos)", "f1"),
-    ]
-    for name, key in rows:
-        print(f"  {name:<34}{pct(base[key]):>10}{pct(tuned[key]):>10}")
-    print(f"  {'Insultos que se escaparon':<34}{base['false_negatives']:>10}{tuned['false_negatives']:>10}")
-    print(f"  {'Mensajes tapados sin motivo':<34}{base['false_positives']:>10}{tuned['false_positives']:>10}")
-    print(f"  {'Error de calibración (menor=mejor)':<34}{base['calibration_error']:>10.3f}{tuned['calibration_error']:>10.3f}")
-    print(f"  Sentimiento igual al original en el {pct(m['sentiment_agreement'])} de los mensajes.")
-    if m["sentiment_changes"]:
-        print("\n  Mensajes que cambiaron de sentimiento (revisá si el cambio tiene sentido):")
-        for c in m["sentiment_changes"][:15]:
-            print(f"    {SENTIMENT[c['base']]:>9} → {SENTIMENT[c['tuned']]:<9}{c['text']}")
-    if m["by_category"]:
-        print("\n  Aciertos por categoría:")
-        for cat, c in m["by_category"].items():
-            print(f"    {cat:<32}{pct(c['base']):>8} → {pct(c['tuned']):<6}({c['n']} ejemplos)")
+    where = "del chat en español" if m["threshold_from"]["source"] == "suite-es" else "de todas las fuentes"
+    print(f"\nUmbral de flag: {m['threshold']:.3f} (marca al 5% de {m['threshold_from']['negatives']} mensajes sanos "
+          f"de calibración {where}).")
+    print("\nAUROC de flag por fuente (0.50 es azar, 1.00 es perfecto), sin los textos de entrenamiento:")
+    for source, value in m["flag_auroc"].items():
+        print(f"  {source:<14}{num(value):>6}")
+    op = m["operating_point"]
+    print(f"\nCon ese umbral, en el chat en español detecta el {pct(op['recall'])} de los mensajes dañinos y "
+          f"marca el {pct(op['fpr'])} de los sanos.")
+    if m["sentiment_f1"]:
+        print("Sentimiento (macro-F1): " + " · ".join(f"{SETS.get(k, k)} {v:.2f}" for k, v in m["sentiment_f1"].items()))
+    else:
+        print("Sentimiento: no se evaluó (faltan los archivos de data/sentiment/).")
+    comparison = m["comparison"]
+    if comparison["active"]:
+        new, old = comparison["new"], comparison["active"]
+        print(f"\nContra el modelo activo ({comparison['active_name']}), en las filas que ninguno de los dos vio: "
+              f"AUROC {num(old['auroc'])} → {num(new['auroc'])}, sentimiento {num(old['sentiment_f1'])} → "
+              f"{num(new['sentiment_f1'])}.")
     print(f"\n{result['reason']}")
     if result["activated"]:
         print(f"Activado: {result['checkpoint'].name}. Reiniciá el server para usarlo.")
@@ -61,18 +59,23 @@ def print_report(result: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--seed", type=int, default=TrainConfig.seed)
     parser.add_argument("--epochs", type=int, default=TrainConfig.epochs)
+    parser.add_argument("--device", choices=["cuda", "cpu"], help="default: cuda when available")
     parser.add_argument("--no-activate", action="store_true", help="save the checkpoint without putting it in use")
+    parser.add_argument("--skip-sentiment-labels", action="store_true",
+                        help="train without labeling new texts' sentiment (they stay out of the sentiment loss)")
     args = parser.parse_args()
 
     try:
         result = run(
             ExampleStore(DEFAULT_PATH),
             MODELS_DIR,
-            threshold=float(os.environ.get("FLAG_THRESHOLD", "0.7")),
-            config=TrainConfig(epochs=args.epochs),
+            TrainConfig(seed=args.seed, epochs=args.epochs),
             activate=not args.no_activate,
-            device=os.environ.get("LAYA_DEVICE") or None,
+            device=args.device,
+            label_sentiment=not args.skip_sentiment_labels,
+            log=lambda message: print(message, flush=True),
         )
     except NotEnoughData as e:
         print(e)

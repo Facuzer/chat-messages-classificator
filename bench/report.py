@@ -65,7 +65,12 @@ def render(board: dict) -> str:
     if meta["preliminary"]:
         lines += ["> **PRELIMINAR:** incluye filas de la suite que nadie revisó todavía. Sirve para probar la "
                   "herramienta, no para decidir.", ""]
-    lines += [f"Generado: {meta['created_at']} · Remuestreos bootstrap: {meta['n_boot']}", ""] + LEGEND
+    lines += [f"Generado: {meta['created_at']} · Remuestreos bootstrap: {meta['n_boot']}", ""]
+    excluded = meta.get("excluded")
+    if excluded:
+        lines += [f"Se excluyeron {excluded['n']} ejemplos con los que se entrenó {', '.join(excluded['contestants'])}: "
+                  "todos los modelos se miden sin ellos.", ""]
+    lines += LEGEND
 
     lines += ["## Cobertura (ejemplos de evaluación: dañinos/sanos)", ""]
     lines += _table(["fuente", "idioma", *SCORED], [
@@ -104,15 +109,11 @@ def render(board: dict) -> str:
             ]
             lines += [f"### {source}", ""] + _table(["funcionalidad", "n", *names], table) + [""]
 
-    if board["routing"]:
-        lines += ["## Laya: mensajes que su router mandó al checkpoint inglés", ""]
-        lines += _table(["modelo", "fuente", "al inglés"],
-                        [[r["contestant"], r["source"], _pct(r["english_share"])] for r in board["routing"]]) + [""]
-
     if board.get("latency"):
         lines += ["## Latencia", ""]
         lines += _table(["modelo", "dispositivo", "idioma", "lote", "p50 ms", "p95 ms", "mensajes/s en lotes"], [
-            [r["contestant"], r["device"], r["lang"], str(r["batch_size"]), f"{r['p50_ms']:.0f}", f"{r['p95_ms']:.0f}",
+            [r["contestant"], r["device"] + (f" ({r['threads']} hilos)" if r.get("threads") else ""), r["lang"],
+             str(r["batch_size"]), f"{r['p50_ms']:.0f}", f"{r['p95_ms']:.0f}",
              "n/a" if r["throughput_per_s"] is None else f"{r['throughput_per_s']:.0f}"]
             for r in board["latency"]
         ]) + [""]

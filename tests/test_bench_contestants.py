@@ -1,42 +1,15 @@
-import re
+import json
 from types import SimpleNamespace
 
 import pytest
 import torch
 
-from bench.contestants import DEFAULT_CONTESTANTS, FACTORIES, OPEN_LICENSES, build_contestants
-from bench.contestants.base import effective_scores
-from bench.contestants.detoxify import DETOXIFY_STYLE, DetoxifyContestant
-from bench.contestants.hf import HORIZON_REVISION, HFContestant
-from bench.taxonomy import FLAG
+from app.checkpoints import ActiveCheckpoint
+from bench.contestants import FineTunedContestant, checkpoint_factories, effective_scores
+from bench.taxonomy import CATEGORIES, FLAG
+from trainer.data import text_key
 
-DETOX_OUT = {"toxicity": [0.99, 0.1], "severe_toxicity": [0.5, 0.0], "obscene": [0.9, 0.0], "identity_attack": [0.2, 0.0],
-             "insult": [0.7, 0.05], "threat": [0.1, 0.0], "sexual_explicit": [0.3, 0.0]}
-
-
-class FakeDetoxify:
-    def __init__(self, out):
-        self.out = out
-
-    def predict(self, texts):
-        return self.out
-
-
-def test_detoxify_returns_one_raw_dict_per_text_and_flag_ignores_toxicity():
-    contestant = DetoxifyContestant(model=FakeDetoxify(DETOX_OUT))
-
-    raw = contestant.predict(["sos un pelotudo", "buena mano"], "es")
-
-    assert raw[0]["toxicity"] == 0.99 and raw[1]["insult"] == 0.05
-    assert effective_scores(contestant, raw[0]) == {
-        "insult": 0.7, "threat": 0.1, "identity_hate": 0.2, "sexual_harassment": 0.3, "profanity": 0.9, FLAG: 0.7,
-    }
-
-
-def test_detoxify_handles_scalar_outputs_for_a_single_text():
-    contestant = DetoxifyContestant(model=FakeDetoxify({k: v[0] for k, v in DETOX_OUT.items()}))
-
-    assert contestant.predict(["x"], "es")[0]["insult"] == 0.7
+LABELS8 = list(CATEGORIES) + ["sentiment.positive", "sentiment.negative", "sentiment.neutral"]
 
 
 class FakeTokenizer:
@@ -49,8 +22,8 @@ class FakeTokenizer:
         return {"input_ids": torch.zeros((n, 4), dtype=torch.long), "attention_mask": torch.ones((n, 4), dtype=torch.long)}
 
 
-class FakeModel:
-    config = SimpleNamespace(id2label={0: "toxicity", 1: "insult", 2: "identity_attack"})
+class FakeHead:
+    config = SimpleNamespace(id2label=dict(enumerate(LABELS8)))
 
     def to(self, device):
         return self
@@ -59,42 +32,73 @@ class FakeModel:
         return self
 
     def __call__(self, input_ids, attention_mask):
-        return SimpleNamespace(logits=torch.tensor([[0.0, 2.0, -2.0]] * input_ids.shape[0]))
+        return SimpleNamespace(logits=torch.tensor([[0.0, 3.0, -3.0, 0.0, 1.0, 0.0, 0.0, 0.0]] * input_ids.shape[0]))
 
 
-def test_hf_contestant_applies_sigmoid_names_outputs_and_truncates():
-    tokenizer = FakeTokenizer()
-    contestant = HFContestant("h", "org/model", "a" * 40, DETOXIFY_STYLE, "", "MIT", device="cpu",
-                              loader=lambda: (tokenizer, FakeModel()))
-
-    [raw] = contestant.predict(["hola"], "es")
-
-    assert raw["toxicity"] == pytest.approx(0.5)
-    assert raw["insult"] == pytest.approx(0.8808, abs=1e-4)
-    assert tokenizer.kwargs["truncation"] is True and tokenizer.kwargs["max_length"] == 256
-    assert contestant.to_scores(raw) == {"insult": raw["insult"], "identity_hate": raw["identity_attack"]}
-    assert contestant.version == "a" * 12
+def make_checkpoint(models_dir, name, created="2026-10-07T12:00:00Z", trained=("sos un gil",), threshold=0.4):
+    path = models_dir / name
+    path.mkdir(parents=True)
+    (path / "config.json").write_text("{}", encoding="utf-8")
+    meta = {"created_at": created, "labels": LABELS8, "threshold": threshold,
+            "counts": {"rows": 15297, "spanish": 306}, "trained_texts": [text_key(t) for t in trained]}
+    (path / "training_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    return path
 
 
-def test_unload_releases_the_model_and_the_next_prediction_reloads_it():
+def contestant(path, **kwargs):
+    return FineTunedContestant(path, device="cpu", loader=lambda: (FakeTokenizer(), FakeHead()), **kwargs)
+
+
+def test_scores_are_the_category_outputs_and_flag_is_their_max(tmp_path):
+    c = contestant(make_checkpoint(tmp_path, "ft-1"))
+
+    [raw] = c.predict(["callate"], "es")
+
+    assert raw["threat"] == pytest.approx(torch.sigmoid(torch.tensor(3.0)).item())
+    scores = effective_scores(c, raw)
+    assert set(scores) == set(CATEGORIES) | {FLAG}
+    assert scores[FLAG] == scores["threat"]
+    assert c.license == "MIT"
+
+
+def test_name_is_the_folder_and_version_changes_when_retrained_into_it(tmp_path):
+    first = FineTunedContestant(make_checkpoint(tmp_path / "a", "ft-1"))
+    again = FineTunedContestant(make_checkpoint(tmp_path / "b", "ft-1", created="2026-10-08T09:00:00Z"))
+
+    assert first.name == again.name == "ft-1"
+    assert first.version == "20261007T120000Z"
+    assert first.version != again.version
+
+
+def test_the_contestant_knows_which_texts_its_checkpoint_trained_on(tmp_path):
+    c = FineTunedContestant(make_checkpoint(tmp_path, "ft-1", trained=("Sos un GIL", "gracias")))
+
+    assert c.trained_on == frozenset({text_key("sos un gil"), text_key("gracias")})
+
+
+def test_notes_say_when_and_with_what_it_trained(tmp_path):
+    notes = FineTunedContestant(make_checkpoint(tmp_path, "ft-1")).notes
+
+    assert "2026-10-07" in notes and "15297 filas" in notes and "0.400" in notes
+    assert "activo" not in notes
+
+
+def test_unload_releases_the_model_and_the_next_prediction_reloads_it(tmp_path):
     loads = []
 
     def loader():
         loads.append(1)
-        return FakeTokenizer(), FakeModel()
+        return FakeTokenizer(), FakeHead()
 
-    contestant = HFContestant("h", "org/model", "a" * 40, DETOXIFY_STYLE, "", "MIT", device="cpu", loader=loader)
-    contestant.predict(["a"], "es")
-    contestant.unload()
-    contestant.predict(["b"], "es")
+    c = FineTunedContestant(make_checkpoint(tmp_path, "ft-1"), device="cpu", loader=loader)
+    c.predict(["a"], "es")
+    c.unload()
+    c.predict(["b"], "es")
 
     assert len(loads) == 2
-    detoxify = DetoxifyContestant(model=FakeDetoxify(DETOX_OUT))
-    detoxify.unload()
-    assert detoxify._model is None
 
 
-def test_hf_contestant_loads_the_pinned_revision_as_safetensors_without_remote_code(monkeypatch):
+def test_loads_the_checkpoint_folder_as_safetensors(tmp_path, monkeypatch):
     import transformers
 
     calls = {}
@@ -107,33 +111,36 @@ def test_hf_contestant_loads_the_pinned_revision_as_safetensors_without_remote_c
 
     monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", recorder("tokenizer"))
     monkeypatch.setattr(transformers.AutoModelForSequenceClassification, "from_pretrained", recorder("model"))
+    path = make_checkpoint(tmp_path, "ft-1")
 
-    assert HFContestant("h", "org/model", "b" * 40, DETOXIFY_STYLE, "", "MIT")._from_hub() == ("tokenizer", "model")
-
-    (tokenizer_args, tokenizer_kwargs), (model_args, model_kwargs) = calls["tokenizer"], calls["model"]
-    assert tokenizer_args == model_args == ("org/model",)
-    assert tokenizer_kwargs["revision"] == model_kwargs["revision"] == "b" * 40
-    assert model_kwargs["use_safetensors"] is True
-    assert tokenizer_kwargs.get("trust_remote_code") is not True and model_kwargs.get("trust_remote_code") is not True
+    assert FineTunedContestant(path)._from_disk() == ("tokenizer", "model")
+    assert calls["tokenizer"][0] == calls["model"][0] == (path,)
+    assert calls["model"][1]["use_safetensors"] is True
 
 
-def test_horizon_is_pinned_to_a_full_revision_sha():
-    assert re.fullmatch(r"[0-9a-f]{40}", HORIZON_REVISION)
+def test_factories_list_every_complete_checkpoint_oldest_first(tmp_path):
+    make_checkpoint(tmp_path, "ft-20261008-090000")
+    make_checkpoint(tmp_path, "ft-20261007-120000")
+    make_checkpoint(tmp_path, "ft-cortado", threshold=None)
+    (tmp_path / "otra-carpeta").mkdir()
+
+    factories = checkpoint_factories(tmp_path)
+
+    assert list(factories) == ["ft-20261007-120000", "ft-20261008-090000"]
+    built = factories["ft-20261007-120000"]("cpu")
+    assert built.name == "ft-20261007-120000" and built.device == "cpu"
 
 
-def test_registry_builds_every_contestant_without_loading_a_model():
-    contestants = build_contestants(list(FACTORIES))
+def test_factories_mark_the_active_checkpoint(tmp_path):
+    old = make_checkpoint(tmp_path, "ft-20261007-120000")
+    make_checkpoint(tmp_path, "ft-20261008-090000")
+    ActiveCheckpoint(tmp_path).activate(old, {})
 
-    assert [c.name for c in contestants] == list(FACTORIES)
-    assert all(c.version and c.notes and c.languages for c in contestants)
-    assert set(DEFAULT_CONTESTANTS) == set(FACTORIES)
+    factories = checkpoint_factories(tmp_path)
 
-
-def test_every_contestant_is_open_source():
-    # The team only uses open, self-hostable models: no paid or hosted APIs.
-    assert {c.name: c.license for c in build_contestants(list(FACTORIES)) if c.license not in OPEN_LICENSES} == {}
+    assert "activo" in factories["ft-20261007-120000"](None).notes
+    assert "activo" not in factories["ft-20261008-090000"](None).notes
 
 
-def test_unknown_contestant_is_an_error():
-    with pytest.raises(ValueError, match="desconocido"):
-        build_contestants(["gpt-9"])
+def test_without_checkpoints_there_are_no_factories(tmp_path):
+    assert checkpoint_factories(tmp_path) == {}

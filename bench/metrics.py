@@ -1,7 +1,7 @@
 """Metrics for one slice of the scoreboard: gold booleans and one contestant's scores for them.
 
-Scores from different contestants live on different scales and most are not calibrated probabilities,
-so nothing here assumes 0.5 means anything. Threshold-free AUROC ranks contestants. A per-contestant
+Each checkpoint's scores sit on their own scale and are not calibrated probabilities, so nothing here
+assumes 0.5 means anything. Threshold-free AUROC ranks contestants. A per-contestant
 operating threshold, chosen where 5% of the calibration negatives get flagged, shows what one fixed
 threshold would do on each source.
 """

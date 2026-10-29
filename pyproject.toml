@@ -1,13 +1,12 @@
 [project]
 name = "message-flagger"
 version = "0.1.0"
-description = "Chat mínimo que usa Laya para flaggear insultos y clasificar el sentimiento de cada mensaje"
+description = "Chat mínimo que usa un mmBERT ajustado para flaggear agresiones y clasificar el sentimiento de cada mensaje"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "fastapi>=0.115",
-    # Pinned: trainer/finetune.py uses Laya's private encoding and calibration APIs.
-    "laya==0.3.22",
     "torch>=2.14",
+    "transformers>=5.18",
     "uvicorn>=0.30",
 ]
 
@@ -16,10 +15,9 @@ dev = [
     "httpx2>=2.13.1",
     "pytest>=8",
 ]
-# Benchmark of moderation models (bench/, scripts/bench.py).
+# Training and evaluation data and metrics (trainer/, bench/): Hugging Face datasets and scikit-learn.
 bench = [
     "datasets>=4.0",
-    "detoxify>=0.5.2",
     "scikit-learn>=1.9",
 ]
 

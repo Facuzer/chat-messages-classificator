@@ -1,4 +1,4 @@
-"""Benchmark checks against real datasets and models. They download data, so they only run with
+"""Benchmark checks against real datasets and checkpoints. They download data, so they only run with
 `uv run pytest -m slow`."""
 
 from collections import Counter
@@ -30,23 +30,16 @@ def test_real_toldbr_and_olidbr_load_with_both_flag_classes():
         assert flags[True] > 100 and flags[False] > 100, flags
 
 
-def test_real_laya_answers_every_taxonomy_question():
-    from bench.contestants.base import effective_scores
-    from bench.contestants.laya import laya_taxonomy
+def test_every_real_checkpoint_scores_a_spanish_insult_above_a_greeting():
+    from bench.contestants import checkpoint_factories, effective_scores
 
-    contestant = laya_taxonomy()
-    scores = [effective_scores(contestant, r) for r in contestant.predict(["sos un pelotudo", "buena mano, gg"], "es")]
+    factories = checkpoint_factories()
+    if not factories:
+        pytest.skip("no hay checkpoints entrenados: corré scripts/finetune.py")
+    for name, factory in factories.items():
+        contestant = factory("cpu")
+        insult, greeting = (effective_scores(contestant, r)["flag"]
+                            for r in contestant.predict(["sos un pelotudo de mierda", "hola, suerte a todos"], "es"))
+        contestant.unload()
 
-    assert all(0.0 <= s["flag"] <= 1.0 and 0.0 <= s["targets_player"] <= 1.0 for s in scores)
-
-
-@pytest.mark.parametrize("name", ["detoxify", "horizon-mmbert"])
-def test_real_classifiers_score_a_spanish_insult_above_a_greeting(name):
-    from bench.contestants import build_contestants
-    from bench.contestants.base import effective_scores
-
-    [contestant] = build_contestants([name])
-    insult, greeting = (effective_scores(contestant, r)["flag"]
-                        for r in contestant.predict(["sos un pelotudo de mierda", "hola, suerte a todos"], "es"))
-
-    assert insult > greeting
+        assert insult > greeting, name

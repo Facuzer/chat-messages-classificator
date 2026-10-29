@@ -1,4 +1,4 @@
-"""Labeled examples for fine-tuning the insult question.
+"""Labeled examples for fine-tuning: messages marked `insult` or `clean`.
 
 Every example comes from one of three sources: a chat message labeled in the UI (`chat`), a
 generated candidate (`generated`) or a row from an imported file (`imported`). Candidates start
@@ -26,6 +26,11 @@ DEFAULT_PATH = Path(__file__).resolve().parent.parent / "data" / "training" / "e
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def text_key(text: str) -> str:
+    """A short id for a text that ignores case and spacing, for comparing texts across datasets."""
+    return hashlib.sha1(normalize_text(text).encode("utf-8")).hexdigest()[:16]
 
 
 def _text_hash(text: str) -> int:

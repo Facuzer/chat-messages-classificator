@@ -3,14 +3,18 @@ from datetime import datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from app.classifier import Classification, Verdict
+from app.classifier import Classification, Flag, Verdict
 from app.examples import ExampleStore
 from app.main import create_app
 from app.store import MessageStore
 
 
+INSULT = {"insult": 0.91, "threat": 0.02, "identity_hate": 0.01, "sexual_harassment": 0.0, "profanity": 0.3}
+CLEAN = {"insult": 0.03, "threat": 0.01, "identity_hate": 0.01, "sexual_harassment": 0.0, "profanity": 0.0}
+
+
 class FakeClassifier:
-    """Stands in for Laya: any text containing "idiota" is an insult, everything else is positive."""
+    """Stands in for the model: any text containing "idiota" is an insult, everything else is positive."""
 
     def __init__(self):
         self.texts = []
@@ -20,16 +24,18 @@ class FakeClassifier:
         if "idiota" in text:
             return Classification(
                 flagged=True,
-                insult=Verdict("insult", 0.91, {"insult": 0.91, "clean": 0.09}),
+                flag=Flag(score=0.91, category="insult", threshold=0.4),
+                categories=INSULT,
                 sentiment=Verdict("negative", 0.8, {"positive": 0.05, "negative": 0.8, "neutral": 0.15}),
-                model="multilingual",
+                model="ft-1",
                 latency_ms=12,
             )
         return Classification(
             flagged=False,
-            insult=Verdict("clean", 0.97, {"insult": 0.03, "clean": 0.97}),
+            flag=Flag(score=0.03, category="insult", threshold=0.4),
+            categories=CLEAN,
             sentiment=Verdict("positive", 0.9, {"positive": 0.9, "negative": 0.02, "neutral": 0.08}),
-            model="english",
+            model="ft-1",
             latency_ms=9,
         )
 
@@ -64,13 +70,14 @@ def test_post_returns_the_classified_message(client, classifier):
     assert classifier.texts == ["sos un idiota"]
     assert body["text"] == "sos un idiota"
     assert body["flagged"] is True
-    assert body["insult"] == {"label": "insult", "confidence": 0.91, "probabilities": {"insult": 0.91, "clean": 0.09}}
+    assert body["flag"] == {"score": 0.91, "category": "insult", "threshold": 0.4}
+    assert body["categories"] == INSULT
     assert body["sentiment"] == {
         "label": "negative",
         "confidence": 0.8,
         "probabilities": {"positive": 0.05, "negative": 0.8, "neutral": 0.15},
     }
-    assert body["model"] == "multilingual"
+    assert body["model"] == "ft-1"
     assert body["latency_ms"] == 12
     assert isinstance(body["id"], str) and body["id"]
     assert body["created_at"].endswith("Z")
@@ -169,14 +176,14 @@ def test_chat_labels_are_only_insult_or_clean(client, label):
 # --- review queue -------------------------------------------------------------------------------
 
 
-def test_next_example_comes_with_laya_prediction(client, classifier, examples):
+def test_next_example_comes_with_the_models_prediction(client, classifier, examples):
     examples.add_candidates([{"text": "sos un idiota", "label": "insult"}], source="generated")
 
     body = client.get("/api/training/next").json()
 
     assert body["example"]["text"] == "sos un idiota"
     assert body["example"]["suggested"] == "insult"
-    assert body["prediction"] == {"p_insult": 0.91, "flagged": True, "model": "multilingual"}
+    assert body["prediction"] == {"p_flag": 0.91, "category": "insult", "flagged": True, "model": "ft-1"}
     assert classifier.texts == ["sos un idiota"]
 
 
@@ -216,7 +223,7 @@ def test_reviewing_with_an_unknown_label_is_422(client, examples):
     assert client.post(f"/api/training/examples/{example_id}/label", json={"label": "maybe"}).status_code == 422
 
 
-def test_training_summary_reports_progress_and_base_model(client, examples):
+def test_training_summary_reports_progress(client, examples):
     examples.add_candidates([{"text": "a", "label": "insult"}], source="imported", accept_labels=True)
     examples.add_candidates([{"text": "b"}], source="generated")
 

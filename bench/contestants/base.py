@@ -12,9 +12,9 @@ class Contestant(Protocol):
     # Part of the cache key: change it whenever the same text could get a different raw output.
     version: str
     languages: frozenset[str]
-    # Shown in the report: what is approximate or risky about this contestant.
+    # Shown in the report: what this contestant is.
     notes: str
-    # SPDX id of the model's license. Only open, self-hostable models: see bench.contestants.OPEN_LICENSES.
+    # SPDX id of the model's license, shown in the report.
     license: str
 
     def predict(self, texts: list[str], lang: str) -> list[dict[str, float]]:
@@ -32,11 +32,6 @@ def effective_scores(contestant, raw: dict[str, float]) -> dict[str, float]:
     if FLAG not in scores and all(c in scores for c in FLAG_CATEGORIES):
         scores[FLAG] = max(scores[c] for c in FLAG_CATEGORIES)
     return scores
-
-
-def map_labels(raw: dict[str, float], mapping: dict[str, str]) -> dict[str, float]:
-    """{our key: raw[their label]} for the labels `mapping` names and `raw` has."""
-    return {ours: float(raw[theirs]) for theirs, ours in mapping.items() if theirs in raw}
 
 
 def free_gpu() -> None:

@@ -2,7 +2,7 @@
 
 ## Para qué sirve
 
-Antes de elegir un modelo de moderación los evaluamos a todos con el mismo examen: mensajes en español, portugués e inglés con la respuesta correcta ya etiquetada. El resultado (`bench_out/scoreboard.md`) muestra qué tan bien separa cada modelo los mensajes que hay que moderar de los que no, por fuente y por categoría.
+Cada entrenamiento de mmBERT-base deja un checkpoint nuevo en `models/`. El benchmark los mide a todos con el mismo examen: mensajes en español, portugués e inglés con la respuesta correcta ya etiquetada. El resultado (`bench_out/scoreboard.md`) muestra qué tan bien separa cada checkpoint los mensajes que hay que moderar de los que no, por fuente y por categoría, para decidir cuál conviene tener activo.
 
 La parte más importante del examen es la **suite propia** (`suites/es_casino.csv`): mensajes como los que vamos a ver en el chat del casino, con lunfardo, jerga de póker y trampas. Una fila cuenta recién cuando una persona revisó sus etiquetas.
 
@@ -53,25 +53,30 @@ La parte más importante del examen es la **suite propia** (`suites/es_casino.cs
 ```bash
 uv sync
 uv run python scripts/bench.py sources                     # cuántos ejemplos hay por fuente y categoría
-uv run python scripts/bench.py run                         # corre los modelos y escribe bench_out/scoreboard.md
+uv run python scripts/bench.py run                         # evalúa todos los checkpoints y escribe bench_out/scoreboard.md
+uv run python scripts/bench.py run --checkpoints ft-20261007-184309,ft-20261008-120000   # solo esos
 uv run python scripts/bench.py run --include-unreviewed    # vista PRELIMINAR con filas sin revisar
-uv run python scripts/bench.py latency --device cpu        # latencia en CPU (y --device cuda)
+uv run python scripts/bench.py latency --device cpu --threads 4   # latencia en CPU con 4 hilos, como un server chico
 ```
 
 `--batch-size` (8 por defecto) controla cuántos mensajes se procesan juntos; en una GPU de 4 GB, 8 es más rápido que 32. Si la GPU se queda sin memoria, bajalo a 4.
 
-Todos los modelos son de código abierto (Apache-2.0) y corren en nuestras máquinas: ningún mensaje sale a una API externa. Un modelo nuevo entra al benchmark solo si cumple lo mismo; el test `test_every_contestant_is_open_source` lo controla.
+## Checkpoints
 
-Las predicciones quedan guardadas en `bench_out/predictions/`. Volver a correr solo evalúa lo nuevo: si revisaste o corregiste filas de la suite, solo se vuelven a evaluar esas. Con `--bootstrap 200` el cálculo de intervalos es más rápido.
+Sin `--checkpoints`, el benchmark evalúa todos los checkpoints completos de `models/` (los que `scripts/activate_model.py --list` no marca como incompletos). Cada uno aparece con el nombre de su carpeta, y el scoreboard dice cuál es el activo.
+
+Casi todos los ejemplos en español con los que se entrena también son filas de la suite, y cada checkpoint guarda con cuáles entrenó. Por eso se sacan del examen los textos con los que se entrenó **cualquiera** de los checkpoints comparados, para todos: así todos se miden con los mismos mensajes y ninguno con algo que memorizó. El scoreboard dice cuántos se sacaron.
+
+Las predicciones quedan guardadas en `bench_out/predictions/`, una carpeta por checkpoint. El entrenamiento también guarda ahí las suyas, así que un checkpoint recién entrenado no se vuelve a evaluar. Si revisaste o corregiste filas de la suite, solo se vuelven a evaluar esas. Con `--bootstrap 200` el cálculo de intervalos es más rápido.
 
 ## Cómo leer el scoreboard
 
-- **AUROC [IC 95%]**: probabilidad de que el modelo puntúe más alto un mensaje dañino que uno sano. 0.5 es tirar una moneda y 1 es perfecto. El intervalo muestra cuánto puede variar por azar.
-- **R · FPR**: cada modelo tiene un umbral, elegido para que marque por error al 5% de los mensajes sanos de la partición de calibración. R es qué parte de los dañinos detecta con ese umbral y FPR qué parte de los sanos marca en cada fuente. Si el FPR de una fuente se aleja mucho del 5%, ese umbral no se traslada bien a ese tipo de texto.
+- **AUROC [IC 95%]**: probabilidad de que el checkpoint puntúe más alto un mensaje dañino que uno sano. 0.5 es tirar una moneda y 1 es perfecto. El intervalo muestra cuánto puede variar por azar.
+- **R · FPR**: cada checkpoint tiene un umbral, elegido para que marque por error al 5% de los mensajes sanos de la partición de calibración. R es qué parte de los dañinos detecta con ese umbral y FPR qué parte de los sanos marca en cada fuente. Si el FPR de una fuente se aleja mucho del 5%, ese umbral no se traslada bien a ese tipo de texto.
 - **Diferencia contra el mejor**: si el intervalo incluye 0, no hay evidencia de que el mejor sea mejor de verdad.
 - **pocos datos**: menos de 30 ejemplos de alguna clase; no sacar conclusiones.
-- **suite-es/human vs. suite-es/generated**: si un modelo anda mucho mejor con las frases generadas, probablemente se parezca más al generador que al chat real.
-- **Laya** se evalúa sin ajuste (zero-shot) y con preguntas sin pulir. La versión ajustada compite en el paso 2, junto con nuestros propios modelos.
+- **suite-es/human vs. suite-es/generated**: si un checkpoint anda mucho mejor con las frases generadas, probablemente aprendió el estilo del generador más que el del chat real.
+- **targets_player** (si un mensaje dañino ataca a una persona concreta): el modelo no tiene esa salida, así que la columna dice n/a. La suite igual etiqueta `target`.
 
 ## Fuentes y licencias
 
@@ -82,4 +87,4 @@ Las predicciones quedan guardadas en `bench_out/predictions/`. Volver a correr s
 | ToLD-Br | pt | CC BY-SA 4.0 |
 | OLID-BR | pt | CC BY 4.0 |
 
-Quedaron afuera por licencia o acceso: OffendES (pide aceptar términos y su licencia se contradice), HatEval y HateBR (no comerciales) y el modelo de odio de pysentimiento (entrenado con HatEval).
+Las públicas se bajan de Hugging Face en una revisión fija. Quedaron afuera por licencia o acceso: OffendES (pide aceptar términos y su licencia se contradice), HatEval y HateBR (no comerciales). Los datos con los que se entrena, y sus licencias, están en [`finetuning.md`](finetuning.md).

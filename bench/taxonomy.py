@@ -1,4 +1,4 @@
-"""The moderation taxonomy every benchmark source and contestant is mapped onto.
+"""The moderation taxonomy every benchmark source and checkpoint output is mapped onto.
 
 docs/benchmark.md has the labeling policy behind each category.
 """
@@ -10,8 +10,7 @@ from dataclasses import dataclass
 LANGS = ("es", "pt", "en")
 CATEGORIES = ("insult", "threat", "identity_hate", "sexual_harassment", "profanity")
 # What `flag` (should moderation act?) is built from. Profanity alone is not harmful: the chat policy
-# decides what to do with it. Sexual harassment is scored on its own: only the Spanish suite labels it,
-# and the off-the-shelf "sexual" outputs detect sexual content, not harassment.
+# decides what to do with it. Sexual harassment is scored on its own: only the Spanish suite labels it.
 FLAG_CATEGORIES = ("insult", "threat", "identity_hate")
 # Traits whose attack counts as identity_hate. Class, body and age insults are `insult`.
 PROTECTED = ("race_ethnicity", "nationality", "religion", "gender", "sexual_orientation", "gender_identity", "disability")
